@@ -2,7 +2,24 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# Intentional misconfiguration: No encryption, public access block, or versioning
-resource "aws_s3_bucket" "insecure_bucket" {
-  bucket = "my-app-insecure-bucket-12345"
+# Secure S3 Bucket with encryption and public access blocked
+resource "aws_s3_bucket" "secure_bucket" {
+  bucket = "my-app-secure-bucket-12345"
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "secure_bucket_crypto" {
+  bucket = aws_s3_bucket.secure_bucket.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "secure_bucket_access" {
+  bucket                  = aws_s3_bucket.secure_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
