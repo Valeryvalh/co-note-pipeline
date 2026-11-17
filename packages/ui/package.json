@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@conote/testing": "0.1.0",
-    "@hookform/resolvers": "^5.9.1",
+    "@hookform/resolvers": "^7.0.6",
     "zod": "^4.6.5"
   }
 }
