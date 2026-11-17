@@ -1,0 +1,85 @@
+/**
+ * Test data factories (ENGINEERING_STANDARDS.md 2.4). Tests build data here instead of copying
+ * object literals, so a change to a type is fixed in one place.
+ */
+
+// The shapes being built.
+import type { Session, SessionUser } from '@/types/auth'
+// Course, class and note shapes.
+import type { ClassSession, Course, Note } from '@/types/domain'
+
+/** Test data factories (ENGINEERING_STANDARDS.md 2.4). Override only what a test cares about. */
+export function makeSessionUser(overrides: Partial<SessionUser> = {}): SessionUser {
+  return {
+    // Default: a student called Victory.
+    id: 'student-1',
+    role: 'student',
+    fullName: 'Victory Okafor',
+    email: 'victory@example.com',
+    // Anything the test passes replaces the defaults above.
+    ...overrides,
+  }
+}
+
+/** A signed-in session for the user built above. */
+export function makeSession(overrides: Partial<SessionUser> = {}): Session {
+  // Wrap the user in a session.
+  return { user: makeSessionUser(overrides) }
+}
+
+/** A course. Override only what a test cares about. */
+export function makeCourse(overrides: Partial<Course> = {}): Course {
+  return {
+    // Default: SWE 311 with a named teacher and no class going on right now.
+    id: 'course-1',
+    code: 'SWE 311',
+    title: 'Software Engineering',
+    description: 'Principles of building software in teams.',
+    teacher: { id: 'teacher-1', fullName: 'Dr. Smith' },
+    studentCount: 48,
+    classCount: 4,
+    inSession: false,
+    // Anything the test passes replaces the defaults above.
+    ...overrides,
+  }
+}
+
+/** A class session, tomorrow 9–11 AM by default. Override only what a test cares about. */
+export function makeClass(overrides: Partial<ClassSession> = {}): ClassSession {
+  // Tomorrow at 9 AM and 11 AM, local time, so the default is always "upcoming".
+  const start = new Date()
+  start.setDate(start.getDate() + 1)
+  start.setHours(9, 0, 0, 0)
+  const end = new Date(start)
+  end.setHours(11)
+  return {
+    // Default: class 1 of course-1, still collecting notes.
+    id: 'class-1',
+    courseId: 'course-1',
+    number: 1,
+    title: 'Introduction to Software Engineering',
+    startsAt: start.toISOString(),
+    endsAt: end.toISOString(),
+    summaryStatus: 'collecting',
+    // Anything the test passes replaces the defaults above.
+    ...overrides,
+  }
+}
+
+/** A note. Override only what a test cares about. */
+export function makeNote(overrides: Partial<Note> = {}): Note {
+  return {
+    // Default: a tagged note for class-1, written and edited at the same moment.
+    id: 'note-1',
+    studentId: 'student-1',
+    courseId: 'course-1',
+    classId: 'class-1',
+    title: 'Why process matters',
+    contentHtml: '<p>Teams need an agreed process.</p>',
+    tags: ['Key concept'],
+    createdAt: '2026-09-20T10:00:00.000Z',
+    updatedAt: '2026-09-20T10:00:00.000Z',
+    // Anything the test passes replaces the defaults above.
+    ...overrides,
+  }
+}

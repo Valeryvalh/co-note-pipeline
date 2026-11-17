@@ -1,0 +1,75 @@
+/**
+ * send-password-reset: an administrator sends someone a password link (admin REQUIREMENTS section
+ * 11). The email is the one the person would get from "Forgot password", pointing at their own
+ * app. Accounts that can sign in get one, and so do invited accounts, for whom it is the
+ * invitation sent again.
+ */
+
+// Checks the body.
+import { z } from 'zod'
+
+// The shared steps and answers.
+import { adminHandler, type FunctionDeps } from './admin.ts'
+import { loginAddress, resetAddress } from './env.ts'
+import { json, refuse } from './http.ts'
+import { canSendPasswordReset, type AccountStatus } from './rules.ts'
+
+/** The body. */
+const bodySchema = z.object({ userId: z.uuid('Choose a person.') })
+
+/** Builds the handler. */
+export function sendPasswordResetHandler(deps: FunctionDeps) {
+  return adminHandler(deps, bodySchema, async ({ actorId, body }) => {
+    const { service, anon } = deps.clients
+    // The account the link is for.
+    const found = await service
+      .from('profiles')
+      .select('email, role, status')
+      .eq('id', body.userId)
+      .maybeSingle()
+    if (found.error) return refuse('unknown', 'Something went wrong. Try again.')
+    if (!found.data) return refuse('not_found', 'User not found.')
+    // Only accounts that can sign in, or are invited, get a link; a blocked account does not.
+    const status = found.data.status as AccountStatus
+    if (!canSendPasswordReset(status)) {
+      return refuse('validation', 'Only active or invited accounts can be sent a link.')
+    }
+    // The email, pointing at the person's own app.
+    const role = found.data.role as 'student' | 'teacher' | 'admin'
+    // An invited teacher or administrator is told to sign in with a code, not to follow a link
+    // (D118). An invitation sent before that has no sign-in address in its user data, so it is
+    // added first; the email then shows it. A student still chooses a password through the link.
+    if (status === 'pending' && role !== 'student') {
+      const saved = await service.auth.admin.updateUserById(body.userId, {
+        user_metadata: { login_url: loginAddress(deps.env, role) },
+      })
+      if (saved.error) return refuse('unknown', 'Something went wrong. Try again.')
+    }
+    const sent = await anon.auth.resetPasswordForEmail(found.data.email as string, {
+      redirectTo: resetAddress(deps.env, role),
+    })
+    // Supabase sends one email per address a minute. Saying so lets the administrator wait and
+    // try again, instead of thinking the address or the mail service is broken.
+    if (sent.error?.code === 'over_email_send_rate_limit') {
+      return refuse(
+        'rate_limited',
+        'An email was sent to this address a moment ago. Wait a minute and try again.',
+      )
+    }
+    if (sent.error) return refuse('unknown', 'The email could not be sent. Try again.')
+    // 5. The audit entry: that a link was sent, not what it holds. An invited account's is the
+    // invitation again, so the history reads that way.
+    const action = status === 'pending' ? 'user.invitation_resent' : 'user.password_reset_sent'
+    const audit = await service.from('audit_logs').insert({
+      actor_id: actorId,
+      actor_role: 'admin',
+      action,
+      entity_type: 'user',
+      entity_id: body.userId,
+      metadata: {},
+      created_at: deps.now().toISOString(),
+    })
+    if (audit.error) return refuse('unknown', 'Something went wrong. Try again.')
+    return json({ ok: true })
+  })
+}

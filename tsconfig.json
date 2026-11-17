@@ -1,0 +1,20 @@
+// Root TypeScript config for the whole repository (D64). It holds no settings itself; it points
+// at each app and package so one `tsc -b` checks everything.
+{
+  // No files directly; everything comes from the references.
+  "files": [],
+  // The apps, the shared packages, and the root tooling files.
+  "references": [
+    { "path": "./apps/student" },
+    { "path": "./apps/admin" },
+    { "path": "./apps/teacher" },
+    { "path": "./packages/ui" },
+    { "path": "./packages/portal" },
+    { "path": "./packages/domain" },
+    { "path": "./packages/core" },
+    { "path": "./packages/supabase" },
+    { "path": "./packages/testing" },
+    { "path": "./supabase/functions" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

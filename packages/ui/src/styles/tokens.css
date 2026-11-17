@@ -1,0 +1,139 @@
+/*
+ * CoNote design tokens (REQUIREMENTS.md section 6.1).
+ * Components use these through Tailwind classes such as bg-primary or text-muted-foreground.
+ * No hex values appear anywhere else in the CoNote apps or shared packages.
+ */
+/* :root is the <html> element, so every variable below is available everywhere. */
+:root {
+  /* Brand */
+  /* Primary brand colour: buttons, active navigation, links, focus rings. */
+  --brand-primary: #4f46e5;
+  /* Hover and pressed state of primary buttons; active-link text. */
+  --brand-primary-dark: #3730a3;
+  /* Pale brand tint: active navigation background, info banners. */
+  --brand-primary-light: #eef2ff;
+  /* Link text. The primary colour fills buttons that carry white text, so it can't also be the
+     link colour on a dark page; this one can differ per theme (D104). */
+  --brand-link: #4f46e5;
+
+  /* Surfaces and text */
+  /* Page background. */
+  --brand-background: #f8fafc;
+  /* Cards, sidebar, header and inputs. */
+  --brand-surface: #ffffff;
+  /* Main text. */
+  --brand-foreground: #111827;
+  /* Secondary text. About 4.6:1 contrast on the background, which passes WCAG AA. */
+  --brand-muted-foreground: #6b7280;
+  /* Borders and dividers (not in the brief; decision D14). */
+  --brand-border: #e5e7eb;
+
+  /* Status: raw colours for icons and fills */
+  /* Raw status colours, for icons and fills only. Too faint for small text on white. */
+  --brand-success: #16a34a;
+  --brand-warning: #f59e0b;
+  --brand-error: #dc2626;
+
+  /* Status: tint + readable text pairs for badges (REQUIREMENTS.md 6.1 contrast rules) */
+  /* Pale green badge background. */
+  --brand-success-soft: #dcfce7;
+  /* Dark green badge text, readable at small sizes. */
+  --brand-success-strong: #166534;
+  /* Pale amber badge background. */
+  --brand-warning-soft: #fef3c7;
+  /* Dark amber badge text. */
+  --brand-warning-strong: #92400e;
+  /* Pale red background for error messages. */
+  --brand-error-soft: #fee2e2;
+  /* Dark red error text. */
+  --brand-error-strong: #991b1b;
+
+  /* Course accents: icon tint + icon colour */
+  /* Course accent 1: icon colour, then its pale tint. Courses get accents 1–4 in turn. */
+  --brand-accent-1: #4f46e5;
+  --brand-accent-1-soft: #eef2ff;
+  /* Course accent 2. */
+  --brand-accent-2: #16a34a;
+  --brand-accent-2-soft: #dcfce7;
+  /* Course accent 3. */
+  --brand-accent-3: #ea580c;
+  --brand-accent-3-soft: #ffedd5;
+  /* Course accent 4. */
+  --brand-accent-4: #0284c7;
+  --brand-accent-4-soft: #e0f2fe;
+
+  /* Shape */
+  /* Base corner radius (12 px); smaller and larger radii are derived from it in globals.css. */
+  --radius: 0.75rem;
+
+  /* shadcn/ui variable names mapped onto the brand */
+  /* The names below are what shadcn/ui components expect. Each points at a brand token above. */
+  --background: var(--brand-background);
+  --foreground: var(--brand-foreground);
+  --card: var(--brand-surface);
+  --card-foreground: var(--brand-foreground);
+  --popover: var(--brand-surface);
+  --popover-foreground: var(--brand-foreground);
+  --primary: var(--brand-primary);
+  /* Text on primary buttons: white. */
+  --primary-foreground: var(--brand-surface);
+  /* Soft button and badge background. */
+  --secondary: var(--brand-primary-light);
+  --secondary-foreground: var(--brand-primary-dark);
+  /* Subtle grey fill for skeletons and disabled areas. */
+  --muted: #f1f5f9;
+  --muted-foreground: var(--brand-muted-foreground);
+  /* Hover background for menu items and ghost buttons. */
+  --accent: var(--brand-primary-light);
+  --accent-foreground: var(--brand-primary-dark);
+  /* Delete and sign-out actions. */
+  --destructive: var(--brand-error);
+  --border: var(--brand-border);
+  /* Input borders. */
+  --input: var(--brand-border);
+  /* Focus ring colour. */
+  --ring: var(--brand-primary);
+}
+
+/*
+ * Dark theme (D103, D104). The student app adds the "dark" class to <html> when the student
+ * chooses dark, on every page, so menus and dialogs that Radix renders at the end of <body> are
+ * dark too. Only the tokens that differ are repeated.
+ */
+:root.dark {
+  color-scheme: dark;
+  /* The brand tint becomes a translucent indigo, and its "dark" partner a light indigo for text. */
+  --brand-primary-light: rgb(99 102 241 / 0.24);
+  --brand-primary-dark: #c7d2fe;
+  /* Links: a lighter indigo, about 8:1 on the dark page. */
+  --brand-link: #a5b4fc;
+  --brand-background: #0b0b10;
+  --brand-surface: #16161d;
+  --brand-foreground: #f4f4f8;
+  --brand-muted-foreground: #a1a1b2;
+  --brand-border: #2b2b38;
+  /* Status tints and their readable text. */
+  --brand-success-soft: #12301f;
+  --brand-success-strong: #86efac;
+  --brand-warning-soft: #3a2a0b;
+  --brand-warning-strong: #fcd34d;
+  --brand-error-soft: #3f1d24;
+  --brand-error-strong: #fca5a5;
+  /* Text on primary buttons stays white (the surface is now dark). */
+  --primary-foreground: #ffffff;
+  /* Subtle fill for skeletons, the composer and the segmented switch. */
+  --muted: #1e1e27;
+  /* Secondary buttons and badges: opaque, so they stay readable over the landing page's indigo
+     band (a translucent tint would pick its colour up). */
+  --secondary: #312e81;
+  /* Course accents: the tints become translucent so they sit on the dark surface, and the icon
+     colours are lifted so they stay readable on it. */
+  --brand-accent-1: #a5b4fc;
+  --brand-accent-1-soft: rgb(99 102 241 / 0.24);
+  --brand-accent-2: #86efac;
+  --brand-accent-2-soft: rgb(34 197 94 / 0.18);
+  --brand-accent-3: #fdba74;
+  --brand-accent-3-soft: rgb(249 115 22 / 0.2);
+  --brand-accent-4: #7dd3fc;
+  --brand-accent-4-soft: rgb(14 165 233 / 0.2);
+}

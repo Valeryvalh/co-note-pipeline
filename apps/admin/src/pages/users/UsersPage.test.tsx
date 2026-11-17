@@ -1,0 +1,629 @@
+/**
+ * Tests for the Users list (admin REQUIREMENTS section 11): tabs, search, filters and sort in the
+ * address, pages, empty and error states, inviting, and status changes.
+ */
+
+// Queries and waiting.
+import { screen, waitFor, within } from '@testing-library/react'
+// Vitest building blocks.
+import { describe, expect, it, vi } from 'vitest'
+
+// The shared error type.
+import { AppError } from '@conote/core/errors'
+// Accessibility check.
+import { expectNoAxeViolations } from '@conote/testing/axe'
+
+// The routes, so the page renders inside the real layout.
+import { routes } from '@/app/routes'
+// The records the demo services read.
+import {
+  courseRecord,
+  emptyPlatformData,
+  userRecord,
+  type PlatformData,
+} from '@/services/platformData'
+// Service types.
+import type { Services } from '@/services/types'
+// What an invitation carries.
+import type { InviteUserInput } from '@/types/users'
+// Session builder.
+import { makeSession } from '@/test/factories'
+// Render helper.
+import { createTestServices, renderWithRouter } from '@/test/renderWithRouter'
+
+/** The platform: the signed-in admin, one teacher, 25 students (s03 suspended). */
+function platform(): PlatformData {
+  // Students 01 to 25.
+  const students = Array.from({ length: 25 }, (_, index) => {
+    const n = String(index + 1).padStart(2, '0')
+    return userRecord({
+      id: `s${n}`,
+      role: 'student',
+      status: n === '03' ? 'suspended' : 'active',
+      fullName: `Student ${n}`,
+      email: `student${n}@conote.example`,
+      studentNumber: `U2023/50${n}`,
+      department: 'Computer Science',
+    })
+  })
+  return emptyPlatformData({
+    users: [
+      userRecord({ id: 'admin-test', role: 'admin', fullName: 'Amara Okafor' }),
+      userRecord({
+        id: 't1',
+        role: 'teacher',
+        fullName: 'Dr. Smith',
+        staffNumber: 'STF-0101',
+        department: 'Software Engineering',
+      }),
+      ...students,
+    ],
+  })
+}
+
+/** Renders the Users page at `path`, as the signed-in admin. */
+function renderUsers(path = '/admin/users', data = platform(), overrides: Partial<Services> = {}) {
+  return renderWithRouter({
+    routes,
+    path,
+    session: makeSession('admin', { fullName: 'Amara Okafor' }),
+    platform: data,
+    overrides,
+  })
+}
+
+/** The rows of the desktop table, header first. */
+async function tableRows() {
+  return within(await screen.findByRole('table', { name: /Users/ })).getAllByRole('row')
+}
+
+describe('UsersPage', () => {
+  // Proves the students tab opens first, with its columns and 20 to a page.
+  it('lists students first, with their columns', async () => {
+    // Act.
+    renderUsers()
+
+    // Assert: heading, selected tab, columns, and the first page.
+    expect(await screen.findByRole('heading', { level: 1, name: 'Users' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Students' })).toHaveAttribute('aria-selected', 'true')
+    const rows = await tableRows()
+    expect(
+      within(rows[0]!)
+        .getAllByRole('columnheader')
+        .map((cell) => cell.textContent),
+    ).toEqual([
+      'Student number',
+      'Name',
+      'Email',
+      'Courses',
+      'Status',
+      'Created',
+      'Last active',
+      'Actions',
+    ])
+    expect(rows).toHaveLength(21)
+    expect(screen.getByText('Showing 1–20 of 25')).toBeInTheDocument()
+  })
+
+  // Proves listing people doesn't load each person's details (the row dialogs load only when used).
+  it('loads no details just to list people', async () => {
+    // Arrange: a working user service that counts detail loads.
+    const data = platform()
+    const services = createTestServices(data)
+    const getUser = vi.spyOn(services.users, 'getUser')
+
+    // Act.
+    renderUsers('/admin/users', data, { users: services.users })
+    await tableRows()
+
+    // Assert.
+    expect(getUser).not.toHaveBeenCalled()
+  })
+
+  // Proves the tabs change the list and the address.
+  it('switches tabs through the address', async () => {
+    // Arrange.
+    const { user, router } = renderUsers()
+    await tableRows()
+
+    // Act.
+    await user.click(screen.getByRole('tab', { name: 'Teachers' }))
+
+    // Assert.
+    expect(router.state.location.search).toBe('?tab=teachers')
+    expect(await screen.findByRole('link', { name: 'Dr. Smith' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Staff number' })).toBeInTheDocument()
+  })
+
+  // Proves the search and the status filter narrow the list and live in the address.
+  it('searches and filters through the address', async () => {
+    // Arrange.
+    const { user, router } = renderUsers()
+    await tableRows()
+
+    // Act: filter by status.
+    await user.selectOptions(screen.getByLabelText('Status'), 'suspended')
+
+    // Assert.
+    expect(router.state.location.search).toBe('?status=suspended')
+    expect(await screen.findByText('Showing 1–1 of 1')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Student 03' })).toBeInTheDocument()
+
+    // Act: search instead.
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }))
+    await user.type(screen.getByRole('searchbox', { name: 'Search users' }), 'u2023/5012')
+
+    // Assert: after the typing pause, the address and the list follow.
+    await waitFor(() => {
+      expect(router.state.location.search).toBe('?q=u2023%2F5012')
+    })
+    expect(await screen.findByText('Showing 1–1 of 1')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Student 12' })).toBeInTheDocument()
+  })
+
+  // Proves a filtered view opened from a link (or after a refresh) shows the same results.
+  it('reads the filters from the address', async () => {
+    // Act.
+    renderUsers('/admin/users?status=suspended')
+
+    // Assert.
+    expect(await screen.findByText('Showing 1–1 of 1')).toBeInTheDocument()
+    expect(screen.getByLabelText('Status')).toHaveValue('suspended')
+  })
+
+  // Proves a search with no matches offers to clear it.
+  it('says when nothing matches, and clears the filters', async () => {
+    // Arrange.
+    const { user, router } = renderUsers('/admin/users?q=nobody')
+
+    // Act.
+    expect(await screen.findByText('Nothing matches these filters.')).toBeInTheDocument()
+    await user.click(screen.getAllByRole('button', { name: 'Clear filters' }).at(-1)!)
+
+    // Assert.
+    expect(router.state.location.search).toBe('')
+    expect(await screen.findByText('Showing 1–20 of 25')).toBeInTheDocument()
+  })
+
+  // Proves an empty tab says so plainly.
+  it('says when a tab has no users', async () => {
+    // Act: a platform with only the admin.
+    renderUsers(
+      '/admin/users',
+      emptyPlatformData({ users: [userRecord({ id: 'admin-test', role: 'admin' })] }),
+    )
+
+    // Assert.
+    expect(await screen.findByText('No users found.')).toBeInTheDocument()
+  })
+
+  // Proves the pages and the sort change the list and the address.
+  it('pages and sorts', async () => {
+    // Arrange.
+    const { user, router } = renderUsers()
+    await tableRows()
+
+    // Act: next page.
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
+
+    // Assert.
+    expect(router.state.location.search).toBe('?page=2')
+    expect(await screen.findByText('Showing 21–25 of 25')).toBeInTheDocument()
+
+    // Act: the list is A to Z by name; one click reverses it (and goes back to page 1).
+    await user.click(screen.getByRole('button', { name: 'Name' }))
+
+    // Assert.
+    expect(router.state.location.search).toBe('?sort=-name')
+    expect(screen.getByRole('columnheader', { name: 'Name' })).toHaveAttribute(
+      'aria-sort',
+      'descending',
+    )
+    expect((await tableRows())[1]).toHaveTextContent('Student 25')
+  })
+
+  // Proves inviting someone adds them as invited, and a taken email is explained.
+  it('invites someone', async () => {
+    // Arrange.
+    const { user } = renderUsers()
+    await tableRows()
+
+    // Act: a taken email first.
+    await user.click(screen.getByRole('button', { name: 'Invite user' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Invite a user' })
+    await user.type(within(dialog).getByLabelText('Full name'), 'Ngozi Eze')
+    await user.type(within(dialog).getByLabelText('Email'), 'student01@conote.example')
+    // Nobody is asked for a department.
+    expect(within(dialog).queryByLabelText('Department')).toBeNull()
+    await user.click(within(dialog).getByRole('button', { name: 'Send invitation' }))
+
+    // Assert.
+    expect(
+      await within(dialog).findByText('An account with this email already exists.'),
+    ).toBeInTheDocument()
+
+    // Act: a new email.
+    await user.clear(within(dialog).getByLabelText('Email'))
+    await user.type(within(dialog).getByLabelText('Email'), 'ngozi@conote.example')
+    await user.click(within(dialog).getByRole('button', { name: 'Send invitation' }))
+
+    // Assert: confirmed, closed, and listed as invited.
+    expect(await screen.findByText('Invitation sent to ngozi@conote.example.')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(await screen.findByText('Showing 1–20 of 26')).toBeInTheDocument()
+  })
+
+  /** The platform with three courses: one taught, one not, and one archived (D116). */
+  function withCourses(): PlatformData {
+    return {
+      ...platform(),
+      courses: [
+        courseRecord({ id: 'c1', code: 'CSC 101', title: 'Programming', teacherId: 't1' }),
+        courseRecord({ id: 'c2', code: 'ENG 101', title: 'Writing', teacherId: null }),
+        courseRecord({
+          id: 'c3',
+          code: 'OLD 100',
+          title: 'Retired',
+          teacherId: null,
+          archivedAt: '2026-01-01T00:00:00.000Z',
+        }),
+      ],
+    }
+  }
+
+  /** Opens the invite dialog on the Students tab, with the courses loaded. */
+  async function openInvite(data = withCourses(), overrides: Partial<Services> = {}) {
+    const view = renderUsers('/admin/users', data, overrides)
+    await tableRows()
+    await view.user.click(screen.getByRole('button', { name: 'Invite user' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Invite a user' })
+    return { ...view, dialog }
+  }
+
+  // Proves courses are offered only when inviting a teacher, and only courses in use (D116).
+  it('offers courses only for a teacher, and only those in use', async () => {
+    const { user, dialog } = await openInvite()
+    // A student is invited without courses.
+    expect(within(dialog).queryByRole('group', { name: /Courses they will teach/ })).toBeNull()
+
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+
+    const group = await within(dialog).findByRole('group', { name: /Courses they will teach/ })
+    expect(await within(group).findByRole('checkbox', { name: /CSC 101/ })).toBeInTheDocument()
+    expect(within(group).getByRole('checkbox', { name: /ENG 101/ })).toBeInTheDocument()
+    // An archived course is not offered.
+    expect(within(group).queryByRole('checkbox', { name: /OLD 100/ })).toBeNull()
+    // The words warn that a taken course moves.
+    expect(within(group).getByText(/already has a teacher moves/)).toBeInTheDocument()
+
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'student')
+    expect(within(dialog).queryByRole('group', { name: /Courses they will teach/ })).toBeNull()
+  })
+
+  // Proves a teacher is invited with their courses, and the confirmation names them.
+  it('invites a teacher with courses and says which', async () => {
+    const real = createTestServices(withCourses()).users
+    const inviteUser = vi.fn((input: InviteUserInput) => real.inviteUser(input))
+    const { user, dialog } = await openInvite(withCourses(), { users: { ...real, inviteUser } })
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+    await user.type(within(dialog).getByLabelText('Full name'), 'Ngozi Eze')
+    await user.type(within(dialog).getByLabelText('Email'), 'ngozi@conote.example')
+    await user.click(await within(dialog).findByRole('checkbox', { name: /CSC 101/ }))
+    await user.click(within(dialog).getByRole('checkbox', { name: /ENG 101/ }))
+
+    await user.click(within(dialog).getByRole('button', { name: 'Send invitation' }))
+
+    expect(
+      await screen.findByText(
+        'Invitation sent to ngozi@conote.example. CSC 101 and ENG 101 will be theirs when they first sign in.',
+      ),
+    ).toBeInTheDocument()
+    expect(inviteUser).toHaveBeenCalledWith({
+      role: 'teacher',
+      fullName: 'Ngozi Eze',
+      email: 'ngozi@conote.example',
+      courseIds: ['c1', 'c2'],
+    })
+  })
+
+  // Proves a teacher can still be invited with no course, as before.
+  it('invites a teacher with no course', async () => {
+    const { user, dialog } = await openInvite()
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+    await user.type(within(dialog).getByLabelText('Full name'), 'Ngozi Eze')
+    await user.type(within(dialog).getByLabelText('Email'), 'ngozi@conote.example')
+
+    await user.click(within(dialog).getByRole('button', { name: 'Send invitation' }))
+
+    expect(await screen.findByText('Invitation sent to ngozi@conote.example.')).toBeInTheDocument()
+  })
+
+  // Proves the list can be narrowed by typing, and a course picked stays picked while it is hidden.
+  it('narrows the course list and keeps what was picked', async () => {
+    const real = createTestServices(withCourses()).users
+    const inviteUser = vi.fn((input: InviteUserInput) => real.inviteUser(input))
+    const { user, dialog } = await openInvite(withCourses(), { users: { ...real, inviteUser } })
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+    await user.click(await within(dialog).findByRole('checkbox', { name: /CSC 101/ }))
+
+    await user.type(within(dialog).getByRole('searchbox', { name: 'Find a course' }), 'writing')
+    expect(within(dialog).queryByRole('checkbox', { name: /CSC 101/ })).toBeNull()
+    await user.click(within(dialog).getByRole('checkbox', { name: /ENG 101/ }))
+    await user.clear(within(dialog).getByRole('searchbox', { name: 'Find a course' }))
+
+    expect(within(dialog).getByRole('checkbox', { name: /CSC 101/ })).toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: /ENG 101/ })).toBeChecked()
+    await user.type(within(dialog).getByLabelText('Full name'), 'Ngozi Eze')
+    await user.type(within(dialog).getByLabelText('Email'), 'ngozi@conote.example')
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+    await user.click(within(dialog).getByRole('button', { name: 'Send invitation' }))
+    await screen.findByText(/will be theirs/)
+    expect(inviteUser.mock.calls[0]?.[0]).toMatchObject({ courseIds: ['c1', 'c2'] })
+  })
+
+  // Proves changing the role back to student drops the courses that were picked.
+  it('sends no courses when the role is changed back to student', async () => {
+    const real = createTestServices(withCourses()).users
+    const inviteUser = vi.fn((input: InviteUserInput) => real.inviteUser(input))
+    const { user, dialog } = await openInvite(withCourses(), { users: { ...real, inviteUser } })
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+    await user.click(await within(dialog).findByRole('checkbox', { name: /CSC 101/ }))
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'student')
+    await user.type(within(dialog).getByLabelText('Full name'), 'Ngozi Eze')
+    await user.type(within(dialog).getByLabelText('Email'), 'ngozi@conote.example')
+
+    await user.click(within(dialog).getByRole('button', { name: 'Send invitation' }))
+
+    expect(await screen.findByText('Invitation sent to ngozi@conote.example.')).toBeInTheDocument()
+    expect(inviteUser.mock.calls[0]?.[0]).not.toHaveProperty('courseIds')
+  })
+
+  // Proves a course the service refuses is explained in the dialog, which stays open.
+  it('explains a refused course', async () => {
+    const real = createTestServices(withCourses()).users
+    const { user, dialog } = await openInvite(withCourses(), {
+      users: {
+        ...real,
+        inviteUser: () =>
+          Promise.reject(new AppError('validation', 'One of the chosen courses is not available.')),
+      },
+    })
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+    await user.type(within(dialog).getByLabelText('Full name'), 'Ngozi Eze')
+    await user.type(within(dialog).getByLabelText('Email'), 'ngozi@conote.example')
+    await user.click(await within(dialog).findByRole('checkbox', { name: /CSC 101/ }))
+
+    await user.click(within(dialog).getByRole('button', { name: 'Send invitation' }))
+
+    expect(
+      await within(dialog).findByText('One of the chosen courses is not available.'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Invite a user' })).toBeInTheDocument()
+  })
+
+  // Proves the dialog with the course list has no accessibility violations.
+  it('has no accessibility violations with the course list', async () => {
+    const { user, dialog } = await openInvite()
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'teacher')
+    await within(dialog).findByRole('checkbox', { name: /CSC 101/ })
+
+    await expectNoAxeViolations(dialog)
+  })
+
+  // Proves suspending asks first, then shows the new status.
+  it('suspends after confirmation', async () => {
+    // Arrange.
+    const { user } = renderUsers()
+    const rows = await tableRows()
+
+    // Act: open Student 01's actions and suspend.
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Student 01' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Suspend' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Suspend Student 01?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Suspend' }))
+
+    // Assert.
+    expect(await screen.findByText('Student 01 is now suspended.')).toBeInTheDocument()
+    expect(within((await tableRows())[1]!).getByText('Suspended')).toBeInTheDocument()
+  })
+
+  /** The platform with one invited student, who sorts first. */
+  function withInvitedStudent(): PlatformData {
+    const data = platform()
+    data.users.push(
+      userRecord({
+        id: 'p1',
+        role: 'student',
+        status: 'pending',
+        fullName: 'Invited Ivy',
+        email: 'ivy@conote.example',
+      }),
+    )
+    return data
+  }
+
+  // Proves an invited person's menu resends the invitation, instead of offering a reset link.
+  it('resends an invitation from the row menu', async () => {
+    // Arrange.
+    const { user } = renderUsers('/admin/users', withInvitedStudent())
+    const rows = await tableRows()
+
+    // Act.
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Invited Ivy' }))
+    expect(screen.queryByRole('menuitem', { name: 'Send password reset link' })).toBeNull()
+    await user.click(await screen.findByRole('menuitem', { name: 'Resend invitation' }))
+
+    // Assert.
+    expect(
+      await screen.findByText('Invitation sent again to ivy@conote.example.'),
+    ).toBeInTheDocument()
+  })
+
+  // Proves the confirmation does not wait for the list to reload: on the real backend a reload
+  // takes seconds, and until then the administrator would see nothing after pressing the button.
+  it('confirms a resent invitation while the list is still reloading', async () => {
+    // Arrange: the list loads once, and every reload after that never finishes.
+    const data = withInvitedStudent()
+    const real = createTestServices(data).users
+    let loads = 0
+    const slowReload: Partial<Services> = {
+      users: {
+        ...real,
+        listUsers: (filter) => {
+          loads += 1
+          return loads === 1 ? real.listUsers(filter) : new Promise(() => undefined)
+        },
+      },
+    }
+    const { user } = renderUsers('/admin/users', data, slowReload)
+    const rows = await tableRows()
+
+    // Act.
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Invited Ivy' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Resend invitation' }))
+
+    // Assert.
+    expect(
+      await screen.findByText('Invitation sent again to ivy@conote.example.'),
+    ).toBeInTheDocument()
+  })
+
+  // Proves deleting an invitation asks first, then removes the person from the list.
+  it('deletes an invitation after confirmation', async () => {
+    // Arrange.
+    const { user } = renderUsers('/admin/users', withInvitedStudent())
+    const rows = await tableRows()
+
+    // Act.
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Invited Ivy' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete invitation' }))
+    const confirm = await screen.findByRole('alertdialog', {
+      name: 'Delete the invitation for Invited Ivy?',
+    })
+    await user.click(within(confirm).getByRole('button', { name: 'Delete invitation' }))
+
+    // Assert.
+    expect(
+      await screen.findByText('The invitation for Invited Ivy was deleted.'),
+    ).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Actions for Invited Ivy' })).toBeNull()
+    })
+  })
+
+  // Proves a person who has signed in has no invitation to delete or resend.
+  it('offers no invitation actions for an active account', async () => {
+    const { user } = renderUsers()
+    const rows = await tableRows()
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Student 01' }))
+    await screen.findByRole('menuitem', { name: 'Edit' })
+    expect(screen.queryByRole('menuitem', { name: 'Delete invitation' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Resend invitation' })).toBeNull()
+  })
+
+  // Proves deleting an account for good needs the person's name typed, then removes them.
+  it('deletes a user after their name is typed', async () => {
+    // Arrange.
+    const { user } = renderUsers()
+    const rows = await tableRows()
+
+    // Act.
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Student 01' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete user' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Delete Student 01 for good?' })
+    const button = within(confirm).getByRole('button', { name: 'Delete user' })
+    expect(button).toBeDisabled()
+    await user.type(within(confirm).getByLabelText('Type Student 01 to confirm'), 'Student 01')
+    await user.click(button)
+
+    // Assert.
+    expect(await screen.findByText('Student 01 was deleted.')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Actions for Student 01' })).toBeNull()
+    })
+  })
+
+  // Proves an invited person is deleted as an invitation, and one's own account is never offered.
+  it('offers no user delete for an invitation or the signed-in administrator', async () => {
+    const { user } = renderUsers('/admin/users', withInvitedStudent())
+    const rows = await tableRows()
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Invited Ivy' }))
+    await screen.findByRole('menuitem', { name: 'Delete invitation' })
+    expect(screen.queryByRole('menuitem', { name: 'Delete user' })).toBeNull()
+  })
+
+  // Proves a teacher can be given a course from their row, and the course shows the teacher.
+  it('assigns a teacher to a course from the row menu', async () => {
+    // Arrange: a platform with one course nobody teaches.
+    const data = platform()
+    data.courses.push(courseRecord({ id: 'c1', code: 'CSC 101', title: 'Programming' }))
+    const { user, services } = renderUsers('/admin/users', data)
+    await tableRows()
+    await user.click(screen.getByRole('tab', { name: 'Teachers' }))
+    const rows = await tableRows()
+
+    // Act: open Dr. Smith's actions, choose the course.
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Dr. Smith' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Assign to course' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Assign Dr. Smith to a course' })
+    await user.click(within(dialog).getByRole('button', { name: 'Assign to course' }))
+    expect(await within(dialog).findByText('Choose a course.')).toBeInTheDocument()
+    await user.selectOptions(within(dialog).getByLabelText('Course'), 'CSC 101 Programming')
+    await user.click(within(dialog).getByRole('button', { name: 'Assign to course' }))
+
+    // Assert.
+    expect(await screen.findByText('Dr. Smith now teaches CSC 101.')).toBeInTheDocument()
+    expect((await services.courses.getCourse('c1')).teacher).toMatchObject({ id: 't1' })
+  })
+
+  // Proves students don't get the action.
+  it('offers "Assign to course" for teachers only', async () => {
+    const { user } = renderUsers()
+    const rows = await tableRows()
+    await user.click(within(rows[1]!).getByRole('button', { name: 'Actions for Student 01' }))
+    await screen.findByRole('menuitem', { name: 'Edit' })
+    expect(screen.queryByRole('menuitem', { name: 'Assign to course' })).toBeNull()
+  })
+
+  // Proves a failed load shows the message and a retry, never the raw error.
+  it('shows an error with a retry', async () => {
+    // Act.
+    renderUsers('/admin/users', platform(), {
+      users: {
+        ...renderUsersServices(),
+        listUsers: () => Promise.reject(new AppError('unknown', 'relation "profiles" missing')),
+      },
+    })
+
+    // Assert.
+    expect(await screen.findByText('Unable to load users.')).toBeInTheDocument()
+    expect(screen.queryByText(/relation/)).toBeNull()
+  })
+
+  // Proves the page has no accessibility problems.
+  it('has no accessibility violations', async () => {
+    // Act.
+    const { container } = renderUsers()
+    await tableRows()
+
+    // Assert.
+    await expectNoAxeViolations(container)
+  })
+})
+
+/** A working user service to override one method of. */
+function renderUsersServices() {
+  // Never called for the methods the test replaces; the rest reject so a mistake shows.
+  const unused = () => Promise.reject(new Error('not used in this test'))
+  return {
+    listUsers: unused,
+    listFilterOptions: () => Promise.resolve({ departments: [], courses: [] }),
+    getUser: unused,
+    inviteUser: unused,
+    updateUser: unused,
+    setUserStatus: unused,
+    sendPasswordReset: unused,
+    deleteInvitation: unused,
+    deleteUser: unused,
+  }
+}
