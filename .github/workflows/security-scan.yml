@@ -1,0 +1,21 @@
+name: IaC Security Scan
+
+on: [push, pull_request]
+
+jobs:
+  iac-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: infrastructure
+          framework: terraform
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: infrastructure
