@@ -1,0 +1,171 @@
+/**
+ * Tests for send-password-reset: who gets a link, where it points, and what is recorded.
+ */
+
+// Vitest building blocks.
+import { describe, expect, it } from 'vitest'
+
+// The unit under test.
+import { sendPasswordResetHandler } from './sendPasswordReset.ts'
+import {
+  ADMIN_ID,
+  NOW,
+  OTHER_ID,
+  bodyOf,
+  post,
+  route,
+  sentTo,
+  setupFunction,
+} from '../testSupport.ts'
+
+/** A handler over an account, unless `routes` says otherwise. */
+function build(account: unknown, routes = {}) {
+  const made = setupFunction({
+    answer: route({ 'profiles:select': { data: account, error: null }, ...routes }),
+  })
+  return { ...made, handler: sendPasswordResetHandler(made.deps) }
+}
+
+/** An active student. */
+const STUDENT = { email: 'ada@conote.example', role: 'student', status: 'active' }
+
+describe('send-password-reset', () => {
+  // Proves an active account gets a link to its own app, and the audit entry holds no link.
+  it('sends the link and records that it was sent', async () => {
+    const { handler, resetPasswordForEmail, queries } = build(STUDENT)
+    const response = await handler(post({ userId: OTHER_ID }))
+    expect(response.status).toBe(200)
+    expect(resetPasswordForEmail).toHaveBeenCalledWith('ada@conote.example', {
+      redirectTo: 'https://app.example/reset-password',
+    })
+    expect(sentTo(queries, 'audit_logs', 'insert')).toEqual({
+      actor_id: ADMIN_ID,
+      actor_role: 'admin',
+      action: 'user.password_reset_sent',
+      entity_type: 'user',
+      entity_id: OTHER_ID,
+      metadata: {},
+      created_at: NOW.toISOString(),
+    })
+  })
+
+  // Proves staff get the link for their own portal.
+  it('points a teacher at the teacher portal', async () => {
+    const { handler, resetPasswordForEmail } = build({ ...STUDENT, role: 'teacher' })
+    await handler(post({ userId: OTHER_ID }))
+    expect(resetPasswordForEmail).toHaveBeenCalledWith('ada@conote.example', {
+      redirectTo: 'https://teacher.example/teacher/reset-password',
+    })
+  })
+
+  // Proves an invited account is sent the link again, and the history says it was an invitation.
+  it('resends the invitation to an invited account', async () => {
+    const { handler, resetPasswordForEmail, queries } = build({
+      ...STUDENT,
+      role: 'admin',
+      status: 'pending',
+    })
+    const response = await handler(post({ userId: OTHER_ID }))
+    expect(response.status).toBe(200)
+    expect(resetPasswordForEmail).toHaveBeenCalledWith('ada@conote.example', {
+      redirectTo: 'https://admin.example/admin/reset-password',
+    })
+    expect(sentTo(queries, 'audit_logs', 'insert')).toMatchObject({
+      action: 'user.invitation_resent',
+      entity_id: OTHER_ID,
+    })
+  })
+
+  // Proves an invited teacher or administrator is given the sign-in address before the email goes
+  // out, so an invitation sent before D118 still shows it (D118).
+  it('gives an invited teacher the sign-in address first', async () => {
+    const { handler, admin, resetPasswordForEmail } = build({
+      ...STUDENT,
+      role: 'teacher',
+      status: 'pending',
+    })
+    await handler(post({ userId: OTHER_ID }))
+    expect(admin.updateUserById).toHaveBeenCalledWith(OTHER_ID, {
+      user_metadata: { login_url: 'https://teacher.example/teacher/login' },
+    })
+    expect(admin.updateUserById.mock.invocationCallOrder[0]).toBeLessThan(
+      resetPasswordForEmail.mock.invocationCallOrder[0] ?? 0,
+    )
+  })
+
+  // Proves accounts that are active, and invited students, are left as they are.
+  it.each([
+    ['active teacher', { role: 'teacher', status: 'active' }],
+    ['invited student', { role: 'student', status: 'pending' }],
+  ])('leaves the user data of an %s alone', async (_name, account) => {
+    const { handler, admin } = build({ ...STUDENT, ...account })
+    await handler(post({ userId: OTHER_ID }))
+    expect(admin.updateUserById).not.toHaveBeenCalled()
+  })
+
+  // Proves no email is sent if the sign-in address could not be saved.
+  it('sends nothing when the sign-in address cannot be saved', async () => {
+    const { handler, admin, resetPasswordForEmail } = build({
+      ...STUDENT,
+      role: 'teacher',
+      status: 'pending',
+    })
+    admin.updateUserById.mockResolvedValueOnce({ data: {}, error: { code: 'unexpected_failure' } })
+    expect((await handler(post({ userId: OTHER_ID }))).status).toBe(502)
+    expect(resetPasswordForEmail).not.toHaveBeenCalled()
+  })
+
+  // Proves only accounts that can sign in, or are waiting to, get a link.
+  it.each(['suspended', 'inactive'])('refuses a %s account', async (status) => {
+    const { handler, resetPasswordForEmail } = build({ ...STUDENT, status })
+    const response = await handler(post({ userId: OTHER_ID }))
+    expect(response.status).toBe(400)
+    await expect(bodyOf(response)).resolves.toMatchObject({
+      error: { message: 'Only active or invited accounts can be sent a link.' },
+    })
+    expect(resetPasswordForEmail).not.toHaveBeenCalled()
+  })
+
+  // Proves a second email to the same address inside Supabase's waiting period is explained,
+  // rather than reported as a failure to send: the administrator only has to wait.
+  it('says to wait when an email was sent a moment ago', async () => {
+    const tooSoon = build(STUDENT)
+    tooSoon.resetPasswordForEmail.mockResolvedValueOnce({
+      data: {},
+      error: { code: 'over_email_send_rate_limit' },
+    })
+    const response = await tooSoon.handler(post({ userId: OTHER_ID }))
+    expect(response.status).toBe(429)
+    await expect(bodyOf(response)).resolves.toMatchObject({
+      error: {
+        kind: 'rate_limited',
+        message: 'An email was sent to this address a moment ago. Wait a minute and try again.',
+      },
+    })
+    expect(sentTo(tooSoon.queries, 'audit_logs', 'insert')).toBeUndefined()
+  })
+
+  // Proves bad input and unknown accounts are refused.
+  it('refuses a bad ID and reports an unknown account', async () => {
+    expect((await build(STUDENT).handler(post({ userId: 'nobody' }))).status).toBe(400)
+    expect((await build(null).handler(post({ userId: OTHER_ID }))).status).toBe(404)
+  })
+
+  // Proves each failing step is reported.
+  it('reports a failed lookup, email and audit entry', async () => {
+    const failed = { data: null, error: { code: 'XX000' } }
+    expect(
+      (await build(STUDENT, { 'profiles:select': failed }).handler(post({ userId: OTHER_ID })))
+        .status,
+    ).toBe(502)
+    expect(
+      (await build(STUDENT, { 'audit_logs:insert': failed }).handler(post({ userId: OTHER_ID })))
+        .status,
+    ).toBe(502)
+    const emailFails = build(STUDENT)
+    emailFails.resetPasswordForEmail.mockResolvedValueOnce({ data: {}, error: { code: 'x' } })
+    const response = await emailFails.handler(post({ userId: OTHER_ID }))
+    expect(response.status).toBe(502)
+    expect(sentTo(emailFails.queries, 'audit_logs', 'insert')).toBeUndefined()
+  })
+})

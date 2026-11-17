@@ -1,0 +1,40 @@
+// TypeScript settings for the Edge Functions' code (D86). The functions run in Supabase's Deno
+// runtime, but all the logic is plain TypeScript that Node tooling checks and tests; only the thin
+// `index.ts` entry files use Deno, through the small declaration in deno.d.ts.
+{
+  "compilerOptions": {
+    // Where incremental build info is cached.
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo",
+    // Modern JavaScript.
+    "target": "es2023",
+    // Built-in types: modern JavaScript, plus the Request and Response the handlers use.
+    "lib": ["ES2023", "DOM"],
+    // No ambient packages: Deno brings its own, declared in deno.d.ts.
+    "types": [],
+    // ES modules, resolved the way Vite resolves them.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    // Deno needs the ".ts" on every relative import; TypeScript must allow it.
+    "allowImportingTsExtensions": true,
+    // Don't type-check library declaration files.
+    "skipLibCheck": true,
+    // Keep imports exactly as written; requires `import type` for types.
+    "verbatimModuleSyntax": true,
+    // Every file is a module.
+    "moduleDetection": "force",
+    // Only type-check; Supabase builds this code.
+    "noEmit": true,
+    // All strict checks, plus the extra ones the apps use.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true
+  },
+  // The functions' source, its declaration, and its tests.
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

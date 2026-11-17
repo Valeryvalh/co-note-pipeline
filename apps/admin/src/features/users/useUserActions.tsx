@@ -1,0 +1,215 @@
+/**
+ * What an administrator can do to one account (admin REQUIREMENTS section 11): change its status
+ * (asking first before blocking it), send a reset link (or an invitation again), delete an
+ * invitation nobody accepted, and edit it. Shared by the list's row
+ * menu and the details page's buttons, so both behave the same.
+ */
+
+// Dialog and confirmation state.
+import { useState } from 'react'
+
+// The confirmation dialog.
+import { ConfirmDialog } from '@conote/ui/common/ConfirmDialog'
+// The confirmation that asks for a name to be typed.
+import { TypeToConfirmDialog } from '@conote/ui/common/TypeToConfirmDialog'
+// Toasts.
+import { useToast } from '@conote/ui/toast'
+
+// The signed-in administrator.
+import { useAuth } from '@conote/portal'
+// The changes.
+import {
+  useDeleteInvitation,
+  useDeleteUser,
+  useSendPasswordReset,
+  useSetUserStatus,
+} from '@/hooks/useUsers'
+// Administrator-facing error wording.
+import { errorMessage } from '@/lib/errorMessages'
+// Status rules and wording.
+import {
+  canDeleteInvitation,
+  canSendPasswordReset,
+  statusActions,
+  statusLabel,
+  type StatusAction,
+} from '@/lib/userStatus'
+// Row shape.
+import type { UserListItem } from '@/types/users'
+
+// The edit and assign forms.
+import { AssignCourseDialog } from './AssignCourseDialog'
+import { EditUserDialog } from './EditUserDialog'
+
+/** What each blocking change says before it happens. */
+function confirmText(action: StatusAction, user: UserListItem) {
+  // Withdrawing an invitation.
+  if (user.status === 'pending') {
+    return 'This withdraws the invitation. They won’t be able to sign in unless you activate the account later.'
+  }
+  // Suspending.
+  if (action.to === 'suspended') {
+    return 'They’ll be signed out at once and can’t sign in until an administrator activates the account. Their notes and courses are kept.'
+  }
+  // Deactivating.
+  return 'They’ll be signed out at once and can’t sign in until an administrator activates the account again. Their notes and courses are kept.'
+}
+
+/** What a screen can add to the actions. */
+interface UserActionOptions {
+  // Called once an invitation is deleted, so a page about that person can leave.
+  onDeleted?: () => void
+}
+
+/** The actions for `user`, and the dialogs they open (render `dialogs` once). */
+export function useUserActions(user: UserListItem, { onDeleted }: UserActionOptions = {}) {
+  // The signed-in administrator, toasts and the changes.
+  const { session } = useAuth()
+  const toast = useToast()
+  const setStatus = useSetUserStatus()
+  const sendReset = useSendPasswordReset()
+  const deleteInvitation = useDeleteInvitation()
+  const deleteUser = useDeleteUser()
+  // The change waiting for confirmation, and whether the edit form is open.
+  const [pending, setPending] = useState<StatusAction | null>(null)
+  // Whether the delete confirmation is open, and whether the one for a real account is.
+  const [deleting, setDeleting] = useState(false)
+  const [deletingAccount, setDeletingAccount] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [assigning, setAssigning] = useState(false)
+
+  // SECURITY: no status changes on one's own account (the service refuses them too).
+  const isSelf = session?.user.id === user.id
+
+  /** Applies a status change and says how it went. */
+  function apply(action: StatusAction) {
+    setStatus.mutate(
+      { userId: user.id, status: action.to },
+      {
+        onSuccess: () => {
+          toast.success(`${user.fullName} is now ${statusLabel(action.to).toLowerCase()}.`)
+        },
+        onError: (error) => {
+          toast.error(errorMessage(error))
+        },
+      },
+    )
+  }
+
+  return {
+    isSelf,
+    // The status changes on offer; none on one's own account.
+    statusActions: isSelf ? [] : statusActions(user.status),
+    // Whether a link can be sent: a reset link, or an invited person's invitation again.
+    canSendReset: canSendPasswordReset(user.status),
+    // Whether a link is being sent, so a page can say so while the email goes out.
+    isSending: sendReset.isPending,
+    // Whether the person is invited and has not accepted: the link is then "Resend invitation".
+    isInvited: user.status === 'pending',
+    // Whether the invitation can be deleted: never for one's own account (the service refuses it).
+    canDeleteInvitation: !isSelf && canDeleteInvitation(user.status),
+    // Asks before deleting an invitation.
+    deleteInvitation: () => {
+      setDeleting(true)
+    },
+    // Whether the account can be deleted for good: anyone who has accepted, but never one's own.
+    canDeleteUser: !isSelf && user.status !== 'pending',
+    // Asks for the name to be typed before deleting an account for good.
+    deleteUser: () => {
+      setDeletingAccount(true)
+    },
+    // Starts a change: asks first when it blocks the account.
+    changeStatus: (action: StatusAction) => {
+      if (action.confirm) setPending(action)
+      else apply(action)
+    },
+    // Sends a reset link, or the invitation again, and says so.
+    sendReset: () => {
+      sendReset.mutate(user.id, {
+        onSuccess: () => {
+          toast.success(
+            user.status === 'pending'
+              ? `Invitation sent again to ${user.email}.`
+              : `Password reset link sent to ${user.email}.`,
+          )
+        },
+        onError: (error) => {
+          toast.error(errorMessage(error))
+        },
+      })
+    },
+    // Only active teachers can be given a course.
+    canAssignCourse: user.role === 'teacher' && user.status === 'active',
+    // Opens the form that gives a teacher a course.
+    assignCourse: () => {
+      setAssigning(true)
+    },
+    // Opens the edit form.
+    edit: () => {
+      setEditing(true)
+    },
+    // The confirmation and the edit form, mounted only while open, so a list of rows doesn't
+    // load every person's details or build a dialog per row.
+    dialogs: (
+      <>
+        {pending && (
+          <ConfirmDialog
+            open
+            onOpenChange={(open) => {
+              if (!open) setPending(null)
+            }}
+            title={`${pending.label} ${user.fullName}?`}
+            description={confirmText(pending, user)}
+            confirmLabel={pending.label}
+            onConfirm={() => {
+              apply(pending)
+            }}
+          />
+        )}
+        {deleting && (
+          <ConfirmDialog
+            open
+            onOpenChange={setDeleting}
+            title={`Delete the invitation for ${user.fullName}?`}
+            description="The account is removed, and the link in the email stops working. You can invite the same address again."
+            confirmLabel="Delete invitation"
+            onConfirm={() => {
+              deleteInvitation.mutate(user.id, {
+                onSuccess: () => {
+                  toast.success(`The invitation for ${user.fullName} was deleted.`)
+                  onDeleted?.()
+                },
+                onError: (error) => {
+                  toast.error(errorMessage(error))
+                },
+              })
+            }}
+          />
+        )}
+        {deletingAccount && (
+          <TypeToConfirmDialog
+            open
+            onOpenChange={setDeletingAccount}
+            title={`Delete ${user.fullName} for good?`}
+            description="Their account, notes, enrolments and requests are removed and can't be brought back. Deactivating keeps everything, if you only want them out for now."
+            expected={user.fullName}
+            confirmLabel="Delete user"
+            onConfirm={() => {
+              deleteUser.mutate(user.id, {
+                onSuccess: () => {
+                  toast.success(`${user.fullName} was deleted.`)
+                  onDeleted?.()
+                },
+                onError: (error) => {
+                  toast.error(errorMessage(error))
+                },
+              })
+            }}
+          />
+        )}
+        {editing && <EditUserDialog userId={user.id} open onOpenChange={setEditing} />}
+        {assigning && <AssignCourseDialog teacher={user} open onOpenChange={setAssigning} />}
+      </>
+    ),
+  }
+}

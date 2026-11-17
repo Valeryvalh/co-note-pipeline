@@ -1,0 +1,487 @@
+/**
+ * The rules every UserService must follow (ENGINEERING_STANDARDS.md 2.5), run against each
+ * implementation. Each run starts from the same small platform built here.
+ */
+
+// Vitest building blocks.
+import { describe, expect, it } from 'vitest'
+
+// The shared vocabulary.
+import type { Role } from '@conote/domain'
+
+// The data the services read, and the record builders.
+import { courseRecord, emptyPlatformData, userRecord, type PlatformData } from '../platformData'
+// The interface under test.
+import type { UserService } from '../types'
+
+/** Builds a service over `data`, with the clock at `now`, acting as administrator `actorId`. */
+export type CreateUserService = (data: PlatformData, now: Date, actorId: string) => UserService
+
+/** What a backend says when an email went to the same address a moment ago. */
+const TOO_SOON = 'An email was sent to this address a moment ago. Wait a minute and try again.'
+
+/** The contract's clock. */
+const NOW = new Date('2026-10-08T12:00:00.000Z')
+
+/** `days` days before NOW, as ISO text. */
+function daysAgo(days: number) {
+  return new Date(NOW.getTime() - days * 86_400_000).toISOString()
+}
+
+/**
+ * The platform: two administrators (Amara acts), two teachers, 25 students in two departments,
+ * two courses (one taught by each teacher) and an archived one, and a little history.
+ */
+function platform(): PlatformData {
+  // Students 01 to 25: odd ones in Computer Science, even ones in English; s03 is suspended.
+  const students = Array.from({ length: 25 }, (_, index) => {
+    const n = String(index + 1).padStart(2, '0')
+    return userRecord({
+      id: `s${n}`,
+      role: 'student',
+      status: n === '03' ? 'suspended' : 'active',
+      fullName: `Student ${n}`,
+      email: `student${n}@conote.example`,
+      studentNumber: `U2023/50${n}`,
+      department: (index + 1) % 2 === 1 ? 'Computer Science' : 'English',
+      createdAt: daysAgo(100 - index),
+      lastActiveAt: index === 0 ? null : daysAgo(index),
+    })
+  })
+  return emptyPlatformData({
+    users: [
+      userRecord({ id: 'a1', role: 'admin', fullName: 'Amara Okafor' }),
+      userRecord({ id: 'a2', role: 'admin', fullName: 'Bola Adeyemi' }),
+      userRecord({
+        id: 't1',
+        role: 'teacher',
+        fullName: 'Dr. Smith',
+        staffNumber: 'STF-0101',
+        department: 'Computer Science',
+      }),
+      userRecord({ id: 't2', role: 'teacher', fullName: 'Mrs. Okoro', department: 'English' }),
+      ...students,
+    ],
+    courses: [
+      courseRecord({
+        id: 'c1',
+        code: 'CSC 101',
+        title: 'Programming',
+        teacherId: 't1',
+        archivedAt: null,
+      }),
+      courseRecord({
+        id: 'c2',
+        code: 'ENG 101',
+        title: 'Writing',
+        teacherId: 't2',
+        archivedAt: null,
+      }),
+      courseRecord({
+        id: 'c3',
+        code: 'OLD 100',
+        title: 'Old',
+        teacherId: 't1',
+        archivedAt: daysAgo(30),
+      }),
+    ],
+    enrollments: [
+      { courseId: 'c1', studentId: 's01' },
+      { courseId: 'c2', studentId: 's01' },
+      { courseId: 'c2', studentId: 's02' },
+    ],
+    auditLog: [
+      {
+        id: 'e1',
+        at: daysAgo(100),
+        actorId: 'a1',
+        action: 'user.invited',
+        entityType: 'user',
+        entityId: 's01',
+        metadata: { role: 'student', status: 'pending' },
+      },
+      {
+        id: 'e2',
+        at: daysAgo(99),
+        actorId: 's01',
+        action: 'user.status_changed',
+        entityType: 'user',
+        entityId: 's01',
+        metadata: { from: 'pending', to: 'active' },
+      },
+    ],
+  })
+}
+
+/** Registers the UserService contract suite under `name`. */
+export function describeUserServiceContract(name: string, create: CreateUserService) {
+  /** A fresh service over the platform, acting as Amara. */
+  const service = () => create(platform(), NOW, 'a1')
+  /** The names on one page for `role`. */
+  const names = async (svc: UserService, role: Role, extra = {}) =>
+    (await svc.listUsers({ role, ...extra })).items.map((user) => user.fullName)
+
+  describe(`UserService contract: ${name}`, () => {
+    // Proves the list shows one role, A to Z, 20 to a page, with the full count.
+    it('lists one role by name, 20 to a page', async () => {
+      // Act.
+      const page = await service().listUsers({ role: 'student' })
+
+      // Assert.
+      expect(page).toMatchObject({ total: 25, page: 1, pageSize: 20 })
+      expect(page.items).toHaveLength(20)
+      expect(page.items[0]?.fullName).toBe('Student 01')
+      expect(page.items.every((user) => user.role === 'student')).toBe(true)
+    })
+
+    // Proves the second page holds the rest.
+    it('returns later pages', async () => {
+      const page = await service().listUsers({ role: 'student', page: 2 })
+      expect(page.items.map((user) => user.fullName)).toEqual([
+        'Student 21',
+        'Student 22',
+        'Student 23',
+        'Student 24',
+        'Student 25',
+      ])
+    })
+
+    // Proves the search matches name, email and number, ignoring case.
+    it('searches names, emails and numbers', async () => {
+      const svc = service()
+      await expect(names(svc, 'teacher', { q: 'SMITH' })).resolves.toEqual(['Dr. Smith'])
+      await expect(names(svc, 'student', { q: 'student07@' })).resolves.toEqual(['Student 07'])
+      await expect(names(svc, 'student', { q: 'u2023/5012' })).resolves.toEqual(['Student 12'])
+      await expect(names(svc, 'teacher', { q: 'stf-0101' })).resolves.toEqual(['Dr. Smith'])
+    })
+
+    // Proves the status, department and course filters.
+    it('filters by status, department and course', async () => {
+      const svc = service()
+      await expect(names(svc, 'student', { status: 'suspended' })).resolves.toEqual(['Student 03'])
+      expect((await svc.listUsers({ role: 'student', department: 'English' })).total).toBe(12)
+      // Students enrolled in the course, and the teacher who teaches it.
+      await expect(names(svc, 'student', { courseId: 'c2' })).resolves.toEqual([
+        'Student 01',
+        'Student 02',
+      ])
+      await expect(names(svc, 'teacher', { courseId: 'c2' })).resolves.toEqual(['Mrs. Okoro'])
+    })
+
+    // Proves sorting by creation and by last activity, with never-active accounts last.
+    it('sorts by created and last active', async () => {
+      const svc = service()
+      // Newest first: student 25 was created last.
+      expect((await names(svc, 'student', { sort: '-created' }))[0]).toBe('Student 25')
+      // Most recent activity first; student 01 has never been active, so comes last.
+      const recent = await svc.listUsers({ role: 'student', sort: '-lastActive', page: 2 })
+      expect(recent.items.at(-1)?.fullName).toBe('Student 01')
+    })
+
+    // Proves course counts: courses in use that the account is enrolled in or teaches. Dr. Smith's
+    // archived course doesn't count.
+    it('counts each account’s current courses', async () => {
+      const svc = service()
+      const students = await svc.listUsers({ role: 'student', q: 'Student 01' })
+      expect(students.items[0]?.courseCount).toBe(2)
+      const teachers = await svc.listUsers({ role: 'teacher', q: 'Smith' })
+      expect(teachers.items[0]?.courseCount).toBe(1)
+    })
+
+    // Proves the filter choices: departments in order, and the courses in use.
+    it('offers departments and active courses as filters', async () => {
+      await expect(service().listFilterOptions()).resolves.toEqual({
+        departments: ['Computer Science', 'English'],
+        courses: [
+          { id: 'c1', code: 'CSC 101', title: 'Programming' },
+          { id: 'c2', code: 'ENG 101', title: 'Writing' },
+        ],
+      })
+    })
+
+    // Proves the details: courses, and the status history read from the audit log.
+    it('shows an account’s details and history', async () => {
+      // Act.
+      const details = await service().getUser('s01')
+
+      // Assert.
+      expect(details.courses.map((course) => course.code)).toEqual(['CSC 101', 'ENG 101'])
+      expect(details.statusHistory).toEqual([
+        { status: 'pending', at: daysAgo(100), byName: 'Amara Okafor' },
+        { status: 'active', at: daysAgo(99), byName: null },
+      ])
+    })
+
+    // Proves an unknown account is not found.
+    it('rejects an unknown account', async () => {
+      await expect(service().getUser('nobody')).rejects.toMatchObject({ kind: 'not_found' })
+    })
+
+    // Proves an invitation creates an invited account, recorded in its history.
+    it('invites someone', async () => {
+      // Arrange.
+      const svc = service()
+
+      // Act.
+      const invited = await svc.inviteUser({
+        role: 'teacher',
+        fullName: 'Ngozi Eze',
+        email: ' Ngozi@Conote.Example ',
+      })
+
+      // Assert: invited, listed, and in the history.
+      expect(invited).toMatchObject({
+        role: 'teacher',
+        status: 'pending',
+        email: 'ngozi@conote.example',
+        createdAt: NOW.toISOString(),
+        lastActiveAt: null,
+        statusHistory: [{ status: 'pending', at: NOW.toISOString(), byName: 'Amara Okafor' }],
+      })
+      await expect(names(svc, 'teacher')).resolves.toContain('Ngozi Eze')
+    })
+
+    // Proves the courses chosen at invitation are kept with it, shown to the administrator, and not
+    // given yet: a course may only go to an active teacher, so they are handed over on acceptance
+    // (D116). Nothing else about the courses changes.
+    it('invites a teacher with courses, kept for when they accept', async () => {
+      const svc = service()
+
+      const invited = await svc.inviteUser({
+        role: 'teacher',
+        fullName: 'Ngozi Eze',
+        email: 'ngozi@conote.example',
+        courseIds: ['c1', 'c2'],
+      })
+
+      expect(invited.invitedCourses.map((course) => course.code)).toEqual(['CSC 101', 'ENG 101'])
+      await expect(svc.getUser(invited.id)).resolves.toMatchObject({
+        invitedCourses: invited.invitedCourses,
+        // Not theirs yet.
+        courses: [],
+        courseCount: 0,
+      })
+      // The courses keep their teachers until the invitation is accepted.
+      await expect(svc.getUser('t1')).resolves.toMatchObject({
+        courses: [{ code: 'CSC 101' }],
+      })
+    })
+
+    // Proves a course chosen twice counts once, and an invitation without courses lists none.
+    it('counts a course chosen twice once, and lists none when none was chosen', async () => {
+      const svc = service()
+
+      const twice = await svc.inviteUser({
+        role: 'teacher',
+        fullName: 'Ngozi Eze',
+        email: 'ngozi@conote.example',
+        courseIds: ['c1', 'c1'],
+      })
+      const plain = await svc.inviteUser({
+        role: 'teacher',
+        fullName: 'Tunde Bello',
+        email: 'tunde@conote.example',
+      })
+
+      expect(twice.invitedCourses).toHaveLength(1)
+      expect(plain.invitedCourses).toEqual([])
+      await expect(svc.getUser('t1')).resolves.toMatchObject({ invitedCourses: [] })
+    })
+
+    // Proves a course that does not exist or is archived refuses the whole invitation, and nobody
+    // is invited.
+    it('refuses a course that is missing or archived, inviting nobody', async () => {
+      const svc = service()
+      const before = (await svc.listUsers({ role: 'teacher' })).total
+
+      // Both are refused before anything is created, so they can be asked for together.
+      await Promise.all(
+        [['c1', 'no-such-course'], ['c3']].map((courseIds) =>
+          expect(
+            svc.inviteUser({
+              role: 'teacher',
+              fullName: 'Ngozi Eze',
+              email: 'ngozi@conote.example',
+              courseIds,
+            }),
+          ).rejects.toMatchObject({
+            kind: 'validation',
+            message: 'One of the chosen courses is not available.',
+          }),
+        ),
+      )
+
+      expect((await svc.listUsers({ role: 'teacher' })).total).toBe(before)
+    })
+
+    // SECURITY: courses are for teachers only, whatever the caller sends.
+    it('refuses courses for a student or an administrator', async () => {
+      const svc = service()
+      // Each is refused before anything is created, so they can be asked for together.
+      await Promise.all(
+        (['student', 'admin'] as const).map((role) =>
+          expect(
+            svc.inviteUser({
+              role,
+              fullName: 'Ngozi Eze',
+              email: `${role}@conote.example`,
+              courseIds: ['c1'],
+            }),
+          ).rejects.toMatchObject({
+            kind: 'validation',
+            message: 'Only teachers can be given courses.',
+          }),
+        ),
+      )
+    })
+
+    // Proves an email can't be invited twice, whatever its case, and bad input is refused.
+    it('refuses a taken email and invalid input', async () => {
+      const svc = service()
+      await expect(
+        svc.inviteUser({ role: 'student', fullName: 'X', email: 'STUDENT01@conote.example' }),
+      ).rejects.toMatchObject({ kind: 'conflict' })
+      await expect(
+        svc.inviteUser({ role: 'student', fullName: '', email: 'x@conote.example' }),
+      ).rejects.toMatchObject({ kind: 'validation' })
+    })
+
+    // Proves profile changes are saved, and checked.
+    it('updates a profile', async () => {
+      // Arrange.
+      const svc = service()
+      const input = {
+        fullName: 'Student One',
+        department: 'English',
+        level: '200 Level',
+        phone: '+234 803 555 0001',
+        studentNumber: 'U2023/9999',
+        staffNumber: null,
+      }
+
+      // Act.
+      const updated = await svc.updateUser('s01', input)
+
+      // Assert: saved, and an empty name is refused.
+      expect(updated).toMatchObject(input)
+      await expect(svc.getUser('s01')).resolves.toMatchObject({ fullName: 'Student One' })
+      await expect(svc.updateUser('s01', { ...input, fullName: ' ' })).rejects.toMatchObject({
+        kind: 'validation',
+      })
+      await expect(svc.updateUser('nobody', input)).rejects.toMatchObject({ kind: 'not_found' })
+    })
+
+    // Proves a status change is applied and recorded with who made it.
+    it('changes status and records it', async () => {
+      // Arrange.
+      const svc = service()
+
+      // Act.
+      const suspended = await svc.setUserStatus('s01', 'suspended')
+
+      // Assert.
+      expect(suspended.status).toBe('suspended')
+      expect(suspended.statusHistory.at(-1)).toEqual({
+        status: 'suspended',
+        at: NOW.toISOString(),
+        byName: 'Amara Okafor',
+      })
+    })
+
+    // Proves the rules: no change the rules don't allow, and no change to one's own account.
+    it('refuses changes the rules don’t allow', async () => {
+      const svc = service()
+      // Suspended accounts can only be activated.
+      await expect(svc.setUserStatus('s03', 'inactive')).rejects.toMatchObject({
+        kind: 'validation',
+      })
+      // An administrator can't lock themselves out.
+      await expect(svc.setUserStatus('a1', 'inactive')).rejects.toMatchObject({
+        kind: 'validation',
+      })
+      await expect(svc.setUserStatus('nobody', 'active')).rejects.toMatchObject({
+        kind: 'not_found',
+      })
+    })
+
+    // Proves links go to accounts that can sign in, and to invited ones (the invitation again),
+    // never to a blocked account.
+    it('sends a link to active and invited accounts only', async () => {
+      const svc = service()
+      await expect(svc.sendPasswordReset('s01')).resolves.toBeUndefined()
+      await expect(svc.sendPasswordReset('s03')).rejects.toMatchObject({ kind: 'validation' })
+      const invited = await svc.inviteUser({
+        role: 'teacher',
+        fullName: 'Ngozi Eze',
+        email: 'ngozi@conote.example',
+      })
+      // The invitation just sent counts: a real backend may ask to wait a minute before another
+      // email goes to the same address, in its own words. Anything else is a failure.
+      const outcome = await svc.sendPasswordReset(invited.id).then(
+        () => 'sent',
+        (error: unknown) => (error as Error).message,
+      )
+      expect(['sent', TOO_SOON]).toContain(outcome)
+    })
+
+    // Proves an invitation nobody accepted can be deleted, and the person is gone with it.
+    it('deletes an invitation', async () => {
+      // Arrange.
+      const svc = service()
+      const invited = await svc.inviteUser({
+        role: 'student',
+        fullName: 'Ngozi Eze',
+        email: 'ngozi@conote.example',
+      })
+
+      // Act.
+      await svc.deleteInvitation(invited.id)
+
+      // Assert: not found any more, and the address can be invited again.
+      await expect(svc.getUser(invited.id)).rejects.toMatchObject({ kind: 'not_found' })
+      await expect(
+        svc.inviteUser({ role: 'student', fullName: 'Ngozi Eze', email: 'ngozi@conote.example' }),
+      ).resolves.toMatchObject({ status: 'pending' })
+    })
+
+    // Proves only an unaccepted invitation can be deleted: anyone else keeps their notes and
+    // history, and an administrator can't delete themselves.
+    it('refuses to delete anyone but an unaccepted invitation', async () => {
+      const svc = service()
+      // Active, suspended, and the administrator's own account.
+      await expect(svc.deleteInvitation('s01')).rejects.toMatchObject({ kind: 'validation' })
+      await expect(svc.deleteInvitation('s03')).rejects.toMatchObject({ kind: 'validation' })
+      await expect(svc.deleteInvitation('a1')).rejects.toMatchObject({ kind: 'validation' })
+      await expect(svc.deleteInvitation('nobody')).rejects.toMatchObject({ kind: 'not_found' })
+      // Still there.
+      await expect(svc.getUser('s01')).resolves.toMatchObject({ id: 's01' })
+    })
+
+    // Proves an account of any status can be deleted for good, and its enrolments go with it.
+    it.each(['s01', 's03', 't1'])('deletes the account %s', async (id) => {
+      const svc = service()
+      await svc.deleteUser(id)
+      await expect(svc.getUser(id)).rejects.toMatchObject({ kind: 'not_found' })
+    })
+
+    // Proves a deleted student leaves their courses, and a deleted teacher leaves theirs without
+    // a teacher (the course itself stays).
+    it('removes a deleted account from its courses', async () => {
+      const svc = service()
+      await svc.deleteUser('s01')
+      await svc.deleteUser('t1')
+      const page = await svc.listUsers({ role: 'teacher' })
+      expect(page.items.map((user) => user.fullName)).toEqual(['Mrs. Okoro'])
+      const details = await svc.getUser('t2')
+      expect(details.courses.map((course) => course.code)).toEqual(['ENG 101'])
+    })
+
+    // Proves an administrator can't delete themselves, and an unknown account is not found.
+    it('refuses to delete the caller or an unknown account', async () => {
+      const svc = service()
+      await expect(svc.deleteUser('a1')).rejects.toMatchObject({ kind: 'validation' })
+      await expect(svc.deleteUser('nobody')).rejects.toMatchObject({ kind: 'not_found' })
+      await expect(svc.getUser('a1')).resolves.toMatchObject({ id: 'a1' })
+    })
+  })
+}
