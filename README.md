@@ -128,18 +128,15 @@ build with the same headers, so a policy that breaks the app fails locally and i
 - [`docs/USER_FLOWS.md`](docs/USER_FLOWS.md): sitemap, user flows, user journeys
 - [`docs/ENGINEERING_STANDARDS.md`](docs/ENGINEERING_STANDARDS.md): testing, architecture, security, review
 
+# CoNote Milestone 3 CLA 02 CYB 319
 
- # CoNote Milestone 3 CLA 02 CYB 319
- We actually knocked out the heaviest lifting for **Milestone 3: Integrate Application and Dependency Security Scanning** during our previous troubleshooting! By adding Trivy to the pipeline, catching the `lodash` vulnerability (which satisfied SEC-01), and removing it, you successfully demonstrated a blocked pipeline and remediation.
+We actually knocked out the heaviest lifting for **Milestone 3: Integrate Application and Dependency Security Scanning** during our previous troubleshooting! By adding Trivy to the pipeline, catching the `lodash` vulnerability (which satisfied SEC-01), and removing it, you successfully demonstrated a blocked pipeline and remediation.
 
 However, looking at the official project document you just shared, we have two quick things left to fully complete Milestone 3:
 
 1. **Preserving Reports:** The requirements state you must "Generate and preserve scan reports" and "Store security reports as pipeline artifacts".
 
-
 2. **Investigation Questions:** You need to answer 10 theoretical questions about software vulnerabilities for your final report.
-
-
 
 Here is how we fulfill both of those right now.
 
@@ -148,79 +145,63 @@ Here is how we fulfill both of those right now.
 We need to update your Trivy job to save its findings into a file and upload it so you can download it later as audit evidence.
 
 1. **Update the Trivy Workflow:** Modify ci.yml.
-Open your `.github/workflows/ci.yml` file and update your `security-scan` job (the Trivy one) to output a JSON report and upload it. Replace your existing Trivy step with these two steps:
+   Open your `.github/workflows/ci.yml` file and update your `security-scan` job (the Trivy one) to output a JSON report and upload it. Replace your existing Trivy step with these two steps:
 
 ```yaml
-  - name: Run Trivy vulnerability scanner
-    uses: aquasecurity/trivy-action@master
-    with:
-      scan-type: 'fs'
-      scan-ref: '.'
-      format: 'json'
-      output: 'trivy-report.json'
-      exit-code: '1'
-      ignore-unfixed: true
-      vuln-type: 'os,library'
-      severity: 'CRITICAL,HIGH'
+- name: Run Trivy vulnerability scanner
+  uses: aquasecurity/trivy-action@master
+  with:
+    scan-type: 'fs'
+    scan-ref: '.'
+    format: 'json'
+    output: 'trivy-report.json'
+    exit-code: '1'
+    ignore-unfixed: true
+    vuln-type: 'os,library'
+    severity: 'CRITICAL,HIGH'
 
-  - name: Upload Trivy Report Artifact
-    uses: actions/upload-artifact@v4
-    if: always() # Ensures the report uploads even if Trivy fails the build
-    with:
-      name: trivy-security-report
-      path: trivy-report.json
-
+- name: Upload Trivy Report Artifact
+  uses: actions/upload-artifact@v4
+  if: always() # Ensures the report uploads even if Trivy fails the build
+  with:
+    name: trivy-security-report
+    path: trivy-report.json
 ```
 
-
 2. **Commit and Verify:** Check the Actions tab.
-Commit this change and push it to GitHub.
-*Verification:* Once the pipeline finishes, go to the pipeline summary page in GitHub Actions. Scroll to the bottom, and you will see a section called **Artifacts** containing your `trivy-security-report`. Take a screenshot of this for your Milestone 3 deliverables!
-
+   Commit this change and push it to GitHub.
+   _Verification:_ Once the pipeline finishes, go to the pipeline summary page in GitHub Actions. Scroll to the bottom, and you will see a section called **Artifacts** containing your `trivy-security-report`. Take a screenshot of this for your Milestone 3 deliverables!
 
 ---
 
 ### 2. Milestone 3 Investigation Questions
 
 1. **What is a software vulnerability?**
-A flaw, weakness, or misconfiguration in software code or architecture that an attacker can exploit to compromise the confidentiality, integrity, or availability of the system.
-
+   A flaw, weakness, or misconfiguration in software code or architecture that an attacker can exploit to compromise the confidentiality, integrity, or availability of the system.
 
 2. **Difference between a vulnerability in your code and a third-party dependency?**
-A code vulnerability is a logical flaw you wrote yourself. A third-party vulnerability exists in an external library (like `lodash`) that you imported; you don't control the code, so you must wait for the maintainer to release a patch or find an alternative.
-
+   A code vulnerability is a logical flaw you wrote yourself. A third-party vulnerability exists in an external library (like `lodash`) that you imported; you don't control the code, so you must wait for the maintainer to release a patch or find an alternative.
 
 3. **What does a CVE represent?**
-Common Vulnerabilities and Exposures. It is a standardized, publicly disclosed identifier (e.g., CVE-2021-44228) used to track specific cybersecurity vulnerabilities across the industry.
-
+   Common Vulnerabilities and Exposures. It is a standardized, publicly disclosed identifier (e.g., CVE-2021-44228) used to track specific cybersecurity vulnerabilities across the industry.
 
 4. **Does a HIGH vulnerability always mean the application can be exploited?**
-No. Exploitability depends heavily on environmental context. For example, a vulnerable library might be installed, but if the specific vulnerable function is never called by your application, or if it is blocked by a Web Application Firewall (WAF), it cannot be actively exploited.
-
+   No. Exploitability depends heavily on environmental context. For example, a vulnerable library might be installed, but if the specific vulnerable function is never called by your application, or if it is blocked by a Web Application Firewall (WAF), it cannot be actively exploited.
 
 5. **Should every vulnerability automatically block a production release?**
-No. Blocking on every low-severity issue would halt development. Only vulnerabilities that breach defined risk thresholds (e.g., CRITICAL, actively exploitable, and fixable) should block a release.
-
+   No. Blocking on every low-severity issue would halt development. Only vulnerabilities that breach defined risk thresholds (e.g., CRITICAL, actively exploitable, and fixable) should block a release.
 
 6. **How can false positives affect development productivity?**
-They cause "alert fatigue." If scanners constantly block builds for non-issues, developers waste hours investigating them, which builds frustration, slows down delivery, and leads to teams ignoring real security alerts.
-
+   They cause "alert fatigue." If scanners constantly block builds for non-issues, developers waste hours investigating them, which builds frustration, slows down delivery, and leads to teams ignoring real security alerts.
 
 7. **What is a vulnerability exception, and who should authorize it?**
-It is a formal acceptance of a specific risk for a set period (e.g., accepting a vulnerability because a patch doesn't exist yet, but a compensating control is in place). It should be authorized by security leadership or a risk management committee, not the developer who wrote the code.
-
+   It is a formal acceptance of a specific risk for a set period (e.g., accepting a vulnerability because a patch doesn't exist yet, but a compensating control is in place). It should be authorized by security leadership or a risk management committee, not the developer who wrote the code.
 
 8. **Why is scanning only the source code insufficient?**
-Because the final deployed application includes much more than source code. It relies on infrastructure configurations, base container images, and runtime packages that can introduce their own severe vulnerabilities entirely independent of the source code.
-
+   Because the final deployed application includes much more than source code. It relies on infrastructure configurations, base container images, and runtime packages that can introduce their own severe vulnerabilities entirely independent of the source code.
 
 9. **How should security reports be retained and reviewed?**
-They should be stored as immutable artifacts directly in the CI/CD platform (which we just configured) and ideally forwarded to a centralized security dashboard for long-term auditability and compliance tracking.
-
+   They should be stored as immutable artifacts directly in the CI/CD platform (which we just configured) and ideally forwarded to a centralized security dashboard for long-term auditability and compliance tracking.
 
 10. **What happens when a new vulnerability is discovered in a dependency after the application has already been deployed?**
-The CI/CD pipeline won't catch it because the code has already passed. The organization must rely on Continuous Cloud Security Posture Management (CSPM) and Cloud Workload Protection Platforms (CWPP) to continuously scan running environments and registry images, triggering an incident response process to patch and redeploy.
-
-
-
-          
+    The CI/CD pipeline won't catch it because the code has already passed. The organization must rely on Continuous Cloud Security Posture Management (CSPM) and Cloud Workload Protection Platforms (CWPP) to continuously scan running environments and registry images, triggering an incident response process to patch and redeploy.
