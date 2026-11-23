@@ -22,11 +22,14 @@ RUN npm run build
 # Stage 2: Minimal, non-root runtime image
 FROM nginx/nginx-unprivileged:1.31.9-alpine3.24 AS runtime
 
+# Apply latest Alpine OS security patches, then drop back to non-root user
+USER 0
+RUN apk update && apk upgrade --no-cache
+USER 101
+
 # Copy built static assets from the student portal
 COPY --from=builder --chown=101:101 /app/apps/student/dist /usr/share/nginx/html
 
-# Non-root user is enforced by default (UID 101)
-USER 101
 EXPOSE 8080
 
 CMD ["nginx", "-g", "daemon off;"]
