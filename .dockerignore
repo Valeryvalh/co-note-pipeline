@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+**/node_modules
+supabase/.temp
+.env
+.env.*
+infrastructure
+docs
+*.md
