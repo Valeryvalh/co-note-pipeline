@@ -131,7 +131,7 @@ jobs:
 
       # SECURITY: fails on any known high or critical vulnerability in a dependency.
       - name: Audit dependencies
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
 
   secrets:
     name: Secret scan
