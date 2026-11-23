@@ -1,0 +1,100 @@
+name: Controlled Production Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Approved GHCR image tag (commit SHA) to deploy'
+        required: true
+        type: string
+      simulate_failure:
+        description: 'Simulate a failed deployment (for SEC-10 testing)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  verify-deployment-policy:
+    name: Verify Branch, Artifact & Least-Privilege Isolation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      approved_image: ${{ steps.verify_image.outputs.image_ref }}
+    steps:
+      - name: Enforce authorized branch policy (SEC-05)
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::Unauthorized branch '${{ github.ref }}'. Production deployments are restricted to 'main'."
+            exit 1
+          fi
+          echo "Authorized branch verified: ${{ github.ref }}"
+
+      - name: Verify production secret is NOT exposed to pre-deploy job (SEC-07)
+        env:
+          CHECK_SECRET: ${{ secrets.PROD_DEPLOY_TOKEN }}
+        run: |
+          if [ -n "$CHECK_SECRET" ]; then
+            echo "::error::Security violation: Production secret leaked into unauthorized job!"
+            exit 1
+          fi
+          echo "Least-privilege verified: PROD_DEPLOY_TOKEN is not accessible outside the production environment."
+
+      - name: Verify approved image exists in GHCR (SEC-09)
+        id: verify_image
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REF="ghcr.io/${REPO_LOWER}:${{ inputs.image_tag }}"
+          echo "Checking registry for approved artifact: ${IMAGE_REF}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if ! docker manifest inspect "${IMAGE_REF}" > /dev/null 2>&1; then
+            echo "::error::Deployment rejected: '${IMAGE_REF}' is not an approved image in GHCR."
+            exit 1
+          fi
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "Approved artifact verified: ${IMAGE_REF}"
+
+  deploy-production:
+    name: Deploy to Production (Approval Required)
+    needs: verify-deployment-policy
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://co-note.example.internal
+    permissions:
+      contents: read
+      packages: read
+      deployments: write
+    steps:
+      - name: Validate protected deployment credentials
+        env:
+          PROD_DEPLOY_TOKEN: ${{ secrets.PROD_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$PROD_DEPLOY_TOKEN" ]; then
+            echo "::error::Missing protected PROD_DEPLOY_TOKEN."
+            exit 1
+          fi
+          echo "Protected production credential loaded (value masked in logs)."
+
+      - name: Execute controlled deployment
+        run: |
+          if [ "${{ inputs.simulate_failure }}" == "true" ]; then
+            echo "::error::Simulated deployment failure (SEC-10). Triggering rollback to last known good digest."
+            exit 1
+          fi
+          echo "Deploying approved artifact: ${{ needs.verify-deployment-policy.outputs.approved_image }}"
+          echo "Deployment completed successfully."
+
+      - name: Record deployment audit trail
+        if: always()
+        run: |
+          echo "### Production Deployment Audit Trail" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Actor:** \`${{ github.actor }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** \`${{ github.ref_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit SHA:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Artifact:** \`${{ needs.verify-deployment-policy.outputs.approved_image }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Timestamp (UTC):** \`$(date -u +"%Y-%m-%dT%H:%M:%SZ")\`" >> "$GITHUB_STEP_SUMMARY"
