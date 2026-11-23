@@ -20,7 +20,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Minimal, non-root runtime image
-FROM nginxinc/nginx-unprivileged:1.27.4-alpine AS runtime
+FROM nginx/nginx-unprivileged:1.31.9-alpine3.24 AS runtime
 
 # Copy built static assets from the student portal
 COPY --from=builder --chown=101:101 /app/apps/student/dist /usr/share/nginx/html
